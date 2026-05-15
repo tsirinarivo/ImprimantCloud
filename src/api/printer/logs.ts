@@ -1,8 +1,6 @@
-import { PrismaClient } from "@prisma/client";
+import { prisma } from "../../lib/prisma";
 import { refreshPendingLogs } from "../../lib/xprint";
 import { LogsQuerySchema } from "../../validation/printer";
-
-const prisma = new PrismaClient();
 
 // GET /api/printer/logs — liste paginée des logs d'impression
 //

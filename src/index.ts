@@ -1,6 +1,7 @@
 // Point d'entrée public du module — réexporte uniquement les surfaces stables
 
-export { encrypt, decrypt } from "./lib/encrypt";
+export { encrypt, decrypt, KEY_MASK } from "./lib/encrypt";
+export { prisma } from "./lib/prisma";
 export {
   callXprint,
   loadPrinterCfg,
@@ -44,4 +45,5 @@ export { enrollPrinter } from "./api/printer/enroll";
 export { printNow } from "./api/printer/print-now";
 
 // Auto-print
+export type { SaleForReceipt } from "./lib/xprint-auto";
 export { autoPrintSaleReceipt, printSaleReceiptNow } from "./lib/xprint-auto";

@@ -1,27 +1,42 @@
 import { z } from "zod";
 
-// Correctif #8 : schémas Zod pour toutes les entrées API imprimante
-
-export const PrinterConfigSchema = z.object({
-  enabled: z.boolean(),
-  user: z.string().min(1).max(100),
-  key: z.string().min(1).max(500),
-  baseUrl: z.string().url().optional(),
-  sn: z.string().min(1).max(50),
-  voice: z.number().int().min(0).max(15).nullable().optional(),
-  header: z.string().max(500).nullable().optional(),
-  footer: z.string().max(500).nullable().optional(),
-  copies: z.number().int().min(1).max(10).default(1),
-  autoOnSaleConfirm: z.boolean().default(true),
-  autoOnPaymentConfirm: z.boolean().default(true),
-  autoOnDeliveryRegister: z.boolean().default(false),
-});
+// Correctif #4 : user/key/sn optionnels au niveau du schéma, obligatoires
+// seulement quand enabled=true (via superRefine).
+export const PrinterConfigSchema = z
+  .object({
+    enabled: z.boolean(),
+    user: z.string().min(1).max(100).optional(),
+    key: z.string().min(1).max(500).optional(),
+    baseUrl: z.string().url().optional(),
+    sn: z.string().min(1).max(50).optional(),
+    voice: z.number().int().min(0).max(15).nullable().optional(),
+    header: z.string().max(500).nullable().optional(),
+    footer: z.string().max(500).nullable().optional(),
+    copies: z.number().int().min(1).max(10).default(1),
+    autoOnSaleConfirm: z.boolean().default(true),
+    autoOnPaymentConfirm: z.boolean().default(true),
+    autoOnDeliveryRegister: z.boolean().default(false),
+  })
+  .superRefine((data, ctx) => {
+    if (data.enabled) {
+      if (!data.user) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Requis si activé", path: ["user"] });
+      }
+      if (!data.key) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Requis si activé", path: ["key"] });
+      }
+      if (!data.sn) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Requis si activé", path: ["sn"] });
+      }
+    }
+  });
 
 export type PrinterConfigInput = z.infer<typeof PrinterConfigSchema>;
 
 export const PrintNowSchema = z.object({
   kind: z.enum(["sale_receipt", "invoice", "delivery_note", "inventory", "credit_note", "test"]),
-  relatedId: z.string().cuid().optional(),
+  // Correctif #7 : .string().min(1) au lieu de .cuid() — compatible UUID, nanoid, etc.
+  relatedId: z.string().min(1).optional(),
   copies: z.number().int().min(1).max(10).optional(),
 });
 

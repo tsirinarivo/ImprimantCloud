@@ -1,8 +1,6 @@
 import crypto from "crypto";
-import { PrismaClient } from "@prisma/client";
+import { prisma } from "./prisma";
 import { decrypt } from "./encrypt";
-
-const prisma = new PrismaClient();
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -25,7 +23,7 @@ export type XprintResponse<T> = {
   data: T | null;
 };
 
-// ─── Validators de type runtime (correctif #12) ───────────────────────────────
+// ─── Validators de type runtime ───────────────────────────────────────────────
 
 export const isString = (v: unknown): v is string => typeof v === "string";
 export const isBoolean = (v: unknown): v is boolean => typeof v === "boolean";
@@ -39,27 +37,38 @@ function sign(user: string, key: string, ts: string): string {
   return crypto.createHash("sha1").update(user + key + ts).digest("hex");
 }
 
-// ─── Détection environnement serverless (correctif #1) ────────────────────────
+// ─── Détection environnement serverless (correctif #6 : calculé une seule fois) ─
 
-function isServerless(): boolean {
-  return !!(
-    process.env.VERCEL ||
-    process.env.AWS_LAMBDA_FUNCTION_NAME ||
-    process.env.NETLIFY ||
-    process.env.CF_PAGES
-  );
-}
+const IS_SERVERLESS = !!(
+  process.env.VERCEL ||
+  process.env.AWS_LAMBDA_FUNCTION_NAME ||
+  process.env.NETLIFY ||
+  process.env.CF_PAGES
+);
 
-// ─── Cache config en mémoire 60s (correctif #11) ─────────────────────────────
+// ─── Cache config en mémoire (correctif #11 : limite de taille + TTL null) ───
 
-const cfgCache = new Map<string, { cfg: PrinterCfg; expiresAt: number }>();
+type CacheEntry = { cfg: PrinterCfg | null; expiresAt: number };
+
+const cfgCache = new Map<string, CacheEntry>();
 const CFG_TTL_MS = 60_000;
+const NULL_TTL_MS = 30_000; // TTL plus court pour les configs absentes/désactivées
+const MAX_CACHE_SIZE = 500;
+
+function setCacheEntry(ownerId: string, entry: CacheEntry): void {
+  // Correctif #11 : éviction FIFO quand la limite est atteinte
+  if (cfgCache.size >= MAX_CACHE_SIZE && !cfgCache.has(ownerId)) {
+    const oldest = cfgCache.keys().next().value;
+    if (oldest !== undefined) cfgCache.delete(oldest);
+  }
+  cfgCache.set(ownerId, entry);
+}
 
 export function invalidateCfgCache(ownerId: string): void {
   cfgCache.delete(ownerId);
 }
 
-// ─── Appel API xpyun : timeout + retry rate-limit (correctifs #4 et #10) ─────
+// ─── Appel API xpyun : timeout + retry rate-limit ────────────────────────────
 
 const FETCH_TIMEOUT_MS = 8_000;
 const RATE_LIMIT_CODE = 1010;
@@ -69,13 +78,10 @@ export async function callXprint<T>(
   cfg: Pick<PrinterCfg, "user" | "key" | "baseUrl">,
   action: string,
   privateParams: Record<string, unknown>,
-  // Correctif #12 : validator de type runtime optionnel
   validator?: (v: unknown) => v is T,
 ): Promise<XprintResponse<T>> {
   for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
     const ts = Math.floor(Date.now() / 1000).toString();
-
-    // Correctif #4 : timeout fetch via AbortController
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
@@ -89,7 +95,6 @@ export async function callXprint<T>(
           user: cfg.user,
           timestamp: ts,
           sign: sign(cfg.user, cfg.key, ts),
-          // Correctif #9 : debug via env var
           debug: process.env.XPYUN_DEBUG === "1" ? "1" : "0",
         }),
         signal: controller.signal,
@@ -114,10 +119,14 @@ export async function callXprint<T>(
     const code = isNumber(raw.code) ? raw.code : -1;
     const msg = isString(raw.msg) ? raw.msg : "";
 
-    // Correctif #10 : retry automatique sur rate limit 1010
-    if (code === RATE_LIMIT_CODE && attempt < RETRY_DELAYS_MS.length) {
-      await new Promise<void>((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
-      continue;
+    // Correctif #9 : rate limit géré explicitement — le return "exhausted" est maintenant
+    // atteint sur la dernière tentative, le dead code après la boucle est supprimé.
+    if (code === RATE_LIMIT_CODE) {
+      if (attempt < RETRY_DELAYS_MS.length) {
+        await new Promise<void>((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
+        continue;
+      }
+      return { ok: false, code: RATE_LIMIT_CODE, msg: "Rate limit — tentatives épuisées", data: null };
     }
 
     const rawData = raw.data ?? null;
@@ -133,25 +142,25 @@ export async function callXprint<T>(
     return { ok: code === 0, code, msg, data };
   }
 
-  return {
-    ok: false,
-    code: RATE_LIMIT_CODE,
-    msg: "Rate limit — tentatives épuisées",
-    data: null,
-  };
+  // Ligne inaccessible — satisfait le compilateur TypeScript
+  return { ok: false, code: -1, msg: "Unreachable", data: null };
 }
 
-// ─── Chargement de config (correctif #11 : cache 60s) ────────────────────────
+// ─── Chargement de config (correctifs #5 et #11) ─────────────────────────────
 
 export async function loadPrinterCfg(ownerId: string): Promise<PrinterCfg | null> {
   const now = Date.now();
   const cached = cfgCache.get(ownerId);
+  // Correctif #5 : cache les résultats null aussi (expiresAt non nul = entrée valide)
   if (cached && cached.expiresAt > now) return cached.cfg;
 
   const row = await prisma.printerConfig.findUnique({ where: { ownerId } });
-  if (!row?.enabled || !row.user || !row.key || !row.sn) return null;
+  if (!row?.enabled || !row.user || !row.key || !row.sn) {
+    // Cache le null pour éviter les DB queries répétées (config absente ou désactivée)
+    setCacheEntry(ownerId, { cfg: null, expiresAt: now + NULL_TTL_MS });
+    return null;
+  }
 
-  // Correctif #2 : déchiffrement de la clé — rétrocompat si non chiffrée
   let decryptedKey: string;
   try {
     decryptedKey = decrypt(row.key);
@@ -172,11 +181,23 @@ export async function loadPrinterCfg(ownerId: string): Promise<PrinterCfg | null
     copies: row.copies ?? 1,
   };
 
-  cfgCache.set(ownerId, { cfg, expiresAt: now + CFG_TTL_MS });
+  setCacheEntry(ownerId, { cfg, expiresAt: now + CFG_TTL_MS });
   return cfg;
 }
 
-// ─── Envoi + log (correctifs #1 #5) ──────────────────────────────────────────
+// ─── Helpers internes ─────────────────────────────────────────────────────────
+
+// Correctif #3 : troncature UTF-8 aware — recule jusqu'à un octet de début de séquence
+function safeBytePreview(content: string, maxBytes: number): string {
+  const buf = Buffer.from(content, "utf-8");
+  if (buf.length <= maxBytes) return content;
+  let end = maxBytes;
+  // 0x80–0xBF = octet de continuation — reculer jusqu'au premier octet de début
+  while (end > 0 && (buf[end]! & 0xc0) === 0x80) end--;
+  return buf.subarray(0, end).toString("utf-8");
+}
+
+// ─── Envoi + log ──────────────────────────────────────────────────────────────
 
 const MAX_CONTENT_BYTES = 4096;
 const LOG_PREVIEW_BYTES = 500;
@@ -205,18 +226,13 @@ export async function sendPrintAndLog(
 
   const orderId = res.data ?? undefined;
 
-  // Correctif #5 : preview en bytes (pas en chars) pour cohérence avec la limite
-  const contentPreview = Buffer.from(content, "utf-8")
-    .subarray(0, LOG_PREVIEW_BYTES)
-    .toString("utf-8");
-
   const log = await prisma.printLog.create({
     data: {
       ownerId,
       sn: cfg.sn,
       kind: meta.kind,
       relatedId: meta.relatedId ?? null,
-      content: contentPreview,
+      content: safeBytePreview(content, LOG_PREVIEW_BYTES), // correctif #3
       copies,
       status: res.ok ? "pending" : "failed",
       orderId: orderId ?? null,
@@ -225,10 +241,10 @@ export async function sendPrintAndLog(
     },
   });
 
-  // Correctif #1 : setTimeout ignoré en serverless — utiliser un cron job
-  // ou un système de queue (BullMQ, Inngest, Trigger.dev) sur ces plateformes.
-  // refreshPendingLogs() est la solution universelle (§8.3 / /api/printer/logs/refresh).
-  if (res.ok && orderId && !isServerless()) {
+  // Correctif #6 : IS_SERVERLESS calculé une seule fois au démarrage du module
+  // ⚠️ NOTE SERVERLESS : ce setTimeout ne s'exécutera PAS sur Vercel/Lambda.
+  // Utiliser un cron job + refreshPendingLogs() comme alternative universelle.
+  if (res.ok && orderId && !IS_SERVERLESS) {
     const lid = log.id;
     setTimeout(() => {
       callXprint<boolean>(cfg, "queryOrderState", { orderId }, isBoolean)
@@ -246,10 +262,10 @@ export async function sendPrintAndLog(
   return { ok: res.ok, orderId, errorMessage: res.ok ? undefined : res.msg };
 }
 
-// ─── Refresh statuts en batch rate-limit safe (correctif #7) ─────────────────
+// ─── Refresh statuts en batch rate-limit safe ─────────────────────────────────
 
 const REFRESH_BATCH_SIZE = 10;
-const REFRESH_BATCH_DELAY_MS = 3_500; // 10 req / 3.5s << limite 30 req / 10s
+const REFRESH_BATCH_DELAY_MS = 3_500;
 
 export async function refreshPendingLogs(
   ownerId: string,
@@ -283,7 +299,6 @@ export async function refreshPendingLogs(
       }),
     );
 
-    // Pause entre batches pour rester sous le rate limit
     if (i + REFRESH_BATCH_SIZE < pending.length) {
       await new Promise<void>((r) => setTimeout(r, REFRESH_BATCH_DELAY_MS));
     }
@@ -303,7 +318,7 @@ export async function getPrinterStatus(
   const r = await callXprint<number>(cfg, "queryPrinterStatus", { sn: cfg.sn }, isNumber);
   return {
     ok: r.ok,
-    status: r.data ?? -1, // 0=offline, 1=online OK, 2=anomalie
+    status: r.data ?? -1,
     msg: r.msg,
   };
 }

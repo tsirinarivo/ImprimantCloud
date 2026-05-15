@@ -1,18 +1,16 @@
-import { PrismaClient } from "@prisma/client";
-import { encrypt } from "../../lib/encrypt";
+import { prisma } from "../../lib/prisma";
+import { encrypt, KEY_MASK } from "../../lib/encrypt";
 import { invalidateCfgCache } from "../../lib/xprint";
 import { PrinterConfigSchema } from "../../validation/printer";
 
-const prisma = new PrismaClient();
-
-// GET /api/printer/config — lecture de la config (sans la clé en clair)
+// GET /api/printer/config — lecture de la config (clé masquée)
 export async function getConfig(ownerId: string) {
   const cfg = await prisma.printerConfig.findUnique({ where: { ownerId } });
   if (!cfg) return null;
 
   return {
     ...cfg,
-    key: cfg.key ? "••••••••" : null, // ne jamais renvoyer la clé
+    key: cfg.key ? KEY_MASK : null, // ne jamais renvoyer la clé en clair
   };
 }
 
@@ -23,14 +21,17 @@ export async function updateConfig(ownerId: string, body: unknown) {
     return { ok: false, errors: parsed.error.flatten().fieldErrors };
   }
 
-  const data = parsed.data;
+  // Correctif #1 : séparer la clé du reste pour éviter de re-chiffrer la valeur masquée.
+  // Si le frontend renvoie KEY_MASK (valeur retournée par getConfig), on ne touche pas
+  // à la clé existante en DB. Sinon on chiffre la nouvelle valeur.
+  const { key: rawKey, ...dataWithoutKey } = parsed.data;
+  const isNewKey = rawKey !== undefined && rawKey !== KEY_MASK;
 
-  // Chiffre la UserKEY avant persistance (correctif #2)
   let encryptedKey: string | undefined;
-  if (data.key) {
+  if (isNewKey) {
     try {
-      encryptedKey = encrypt(data.key);
-    } catch (e) {
+      encryptedKey = encrypt(rawKey!);
+    } catch {
       return { ok: false, errors: { key: ["Chiffrement impossible — vérifier APP_ENCRYPTION_KEY"] } };
     }
   }
@@ -39,17 +40,16 @@ export async function updateConfig(ownerId: string, body: unknown) {
     where: { ownerId },
     create: {
       ownerId,
-      ...data,
-      key: encryptedKey ?? data.key,
+      ...dataWithoutKey,
+      key: encryptedKey ?? null,
     },
     update: {
-      ...data,
+      ...dataWithoutKey,
+      // Correctif #1 : key omise de l'update si elle n'a pas changé → Prisma conserve l'existante
       ...(encryptedKey ? { key: encryptedKey } : {}),
     },
   });
 
-  // Invalider le cache immédiatement après mise à jour
   invalidateCfgCache(ownerId);
-
   return { ok: true };
 }

@@ -7,7 +7,11 @@ import { createCipheriv, createDecipheriv, randomBytes } from "crypto";
 const ALGO = "aes-256-gcm";
 const KEY_ENV = "APP_ENCRYPTION_KEY";
 
+// Correctif #10 : clé parsée une seule fois au lieu d'être ré-allouée à chaque appel
+let _cachedKey: Buffer | null = null;
+
 function getKey(): Buffer {
+  if (_cachedKey) return _cachedKey;
   const hex = process.env[KEY_ENV];
   if (!hex || hex.length !== 64) {
     throw new Error(
@@ -15,7 +19,8 @@ function getKey(): Buffer {
         `Générer avec : node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`,
     );
   }
-  return Buffer.from(hex, "hex");
+  _cachedKey = Buffer.from(hex, "hex");
+  return _cachedKey;
 }
 
 // Chiffre une chaîne et retourne un blob base64 : iv(12) + tag(16) + ciphertext
@@ -40,3 +45,6 @@ export function decrypt(ciphertext: string): string {
   decipher.setAuthTag(tag);
   return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf8");
 }
+
+// Valeur renvoyée par getConfig() pour masquer la clé en lecture
+export const KEY_MASK = "••••••••";
