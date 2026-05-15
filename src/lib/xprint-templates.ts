@@ -54,6 +54,17 @@ export function formatMoney(amount: number, suffix = " MGA"): string {
   );
 }
 
+
+// Q1 : retire < et > du payload (tag injection silencieuse dans le parser xpyun)
+// Q2 : '<C> </C><BR>' prime ESC a 1 dans le firmware AVANT la commande GS(k du QR code.
+//      Certains firmwares Xprinter (XP-365B, XP-420B) ignorent le <C> wrapper sur les
+//      commandes graphiques si l'alignement centre n'est pas deja actif dans le registre.
+function qrcode(payload: string, maxBytes = 256): string {
+  const safe = payload.slice(0, maxBytes).replace(/[<>]/g, "");
+  if (!safe) return "";
+  return `<C> </C><BR><C><QRCODE>${safe}</QRCODE></C>`;
+}
+
 // ─── Ticket de caisse ─────────────────────────────────────────────────────────
 
 // Chaîne de traitement obligatoire :
@@ -118,8 +129,7 @@ export function formatSaleReceipt(opts: {
     lines.push(`<L>${escapeXprint(row("Monnaie rendue", formatMoney(opts.change, cur)))}</L>`);
   }
   if (opts.qrPayload) {
-    lines.push("");
-    lines.push(`<C><QRCODE>${opts.qrPayload.slice(0, 256)}</QRCODE></C>`);
+    lines.push(qrcode(opts.qrPayload));
   }
   lines.push("");
   lines.push(`<C>Merci de votre visite !</C>`);
@@ -175,8 +185,7 @@ export function formatDeliveryNote(opts: {
   lines.push(divider());
   lines.push(`<L><B>${escapeXprint(row("TOTAL COLIS", String(opts.totalQty)))}</B></L>`);
   if (opts.qrPayload) {
-    lines.push("");
-    lines.push(`<C><QRCODE>${opts.qrPayload.slice(0, 256)}</QRCODE></C>`);
+    lines.push(qrcode(opts.qrPayload));
   }
   lines.push("");
   lines.push(`<L>Signature client :</L>`);
