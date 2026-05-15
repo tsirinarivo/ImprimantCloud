@@ -1,0 +1,57 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Config par "tenant" — renommer ownerId selon le domaine :
+// shopId, warehouseId, branchId, tenantId…
+model PrinterConfig {
+  id        String  @id @default(cuid())
+  ownerId   String  @unique
+  enabled   Boolean @default(false)
+
+  user    String? // identifiant développeur xpyun
+  key     String? // UserKEY chiffré en AES-256-GCM (voir src/lib/encrypt.ts)
+  baseUrl String? // override URL de base (Chine vs international)
+  sn      String? // numéro de série de l'imprimante
+
+  voice  Int?    // 0-15 : volume + son de notification
+  header String? // texte multi-lignes affiché en haut de chaque ticket
+  footer String? // texte multi-lignes affiché en bas de chaque ticket
+  copies Int     @default(1)
+
+  // Flags auto-print — adapter aux flows métier
+  autoOnSaleConfirm      Boolean @default(true)
+  autoOnPaymentConfirm   Boolean @default(true)
+  autoOnDeliveryRegister Boolean @default(false)
+
+  updatedAt DateTime @updatedAt
+}
+
+model PrintLog {
+  id      String @id @default(cuid())
+  ownerId String
+  sn      String
+
+  // sale_receipt | invoice | delivery_note | inventory | credit_note | test
+  kind      String
+  relatedId String? // FK optionnelle vers Sale / Invoice / Delivery…
+
+  content String // 500 premiers bytes du contenu (debug)
+  copies  Int    @default(1)
+
+  status  String  // pending | printed | failed
+  orderId String? // identifiant de job renvoyé par xpyun
+
+  error    String?
+  failedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([ownerId, createdAt])
+  @@index([status])
+}
