@@ -41,7 +41,7 @@ export async function getLogs(ownerId: string, query: unknown) {
       total,
       page,
       perPage,
-      pageCount: Math.ceil(total / perPage),
+      pageCount: Math.max(1, Math.ceil(total / perPage)), // N7 : min 1 même si aucun résultat
       pendingCount,
     },
   };

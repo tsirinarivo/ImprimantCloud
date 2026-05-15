@@ -14,6 +14,10 @@ export type PrinterCfg = {
   header: string | null;
   footer: string | null;
   copies: number;
+  // A3-1 : flags auto-print inclus dans le cache — évite un second aller/retour DB
+  autoOnSaleConfirm: boolean;
+  autoOnPaymentConfirm: boolean;
+  autoOnDeliveryRegister: boolean;
 };
 
 export type XprintResponse<T> = {
@@ -37,7 +41,7 @@ function sign(user: string, key: string, ts: string): string {
   return crypto.createHash("sha1").update(user + key + ts).digest("hex");
 }
 
-// ─── Détection environnement serverless (correctif #6 : calculé une seule fois) ─
+// ─── Détection environnement serverless (calculé une seule fois) ──────────────
 
 const IS_SERVERLESS = !!(
   process.env.VERCEL ||
@@ -46,17 +50,16 @@ const IS_SERVERLESS = !!(
   process.env.CF_PAGES
 );
 
-// ─── Cache config en mémoire (correctif #11 : limite de taille + TTL null) ───
+// ─── Cache config en mémoire (TTL + limite de taille + cache null) ─────────────
 
 type CacheEntry = { cfg: PrinterCfg | null; expiresAt: number };
 
 const cfgCache = new Map<string, CacheEntry>();
 const CFG_TTL_MS = 60_000;
-const NULL_TTL_MS = 30_000; // TTL plus court pour les configs absentes/désactivées
+const NULL_TTL_MS = 30_000;
 const MAX_CACHE_SIZE = 500;
 
 function setCacheEntry(ownerId: string, entry: CacheEntry): void {
-  // Correctif #11 : éviction FIFO quand la limite est atteinte
   if (cfgCache.size >= MAX_CACHE_SIZE && !cfgCache.has(ownerId)) {
     const oldest = cfgCache.keys().next().value;
     if (oldest !== undefined) cfgCache.delete(oldest);
@@ -68,10 +71,11 @@ export function invalidateCfgCache(ownerId: string): void {
   cfgCache.delete(ownerId);
 }
 
-// ─── Appel API xpyun : timeout + retry rate-limit ────────────────────────────
+// ─── Appel API xpyun : timeout + retry rate-limit + retry réseau ──────────────
 
 const FETCH_TIMEOUT_MS = 8_000;
 const RATE_LIMIT_CODE = 1010;
+// 3 délais → 4 tentatives maximum (tentative initiale + 3 réessais)
 const RETRY_DELAYS_MS = [1_000, 3_000, 7_000] as const;
 
 export async function callXprint<T>(
@@ -99,15 +103,29 @@ export async function callXprint<T>(
         }),
         signal: controller.signal,
       });
+
       raw = await res.json().catch(() => null);
+
+      // N8 : réponse HTTP non-2xx sans corps JSON valide → réessai ou erreur claire
+      if (!res.ok && !isRecord(raw)) {
+        if (attempt < RETRY_DELAYS_MS.length) {
+          await new Promise<void>((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
+          continue;
+        }
+        return { ok: false, code: res.status, msg: `HTTP ${res.status} — service indisponible`, data: null };
+      }
     } catch (err) {
-      const isAbort = err instanceof Error && err.name === "AbortError";
-      return {
-        ok: false,
-        code: -100,
-        msg: isAbort ? `Timeout (${FETCH_TIMEOUT_MS / 1000}s)` : "Erreur réseau",
-        data: null,
-      };
+      clearTimeout(timer);
+      // AbortError = notre propre timeout — pas de réessai (l'API est déjà lente)
+      if (err instanceof Error && err.name === "AbortError") {
+        return { ok: false, code: -100, msg: `Timeout (${FETCH_TIMEOUT_MS / 1000}s)`, data: null };
+      }
+      // N3 : erreur réseau transitoire — réessai avec délai exponentiel
+      if (attempt < RETRY_DELAYS_MS.length) {
+        await new Promise<void>((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
+        continue;
+      }
+      return { ok: false, code: -100, msg: "Erreur réseau — tentatives épuisées", data: null };
     } finally {
       clearTimeout(timer);
     }
@@ -117,10 +135,9 @@ export async function callXprint<T>(
     }
 
     const code = isNumber(raw.code) ? raw.code : -1;
-    const msg = isString(raw.msg) ? raw.msg : "";
+    // N2 : msg vide possible quand l'API ne renvoie pas de champ msg
+    const msg = (isString(raw.msg) && raw.msg) ? raw.msg : `Code ${code}`;
 
-    // Correctif #9 : rate limit géré explicitement — le return "exhausted" est maintenant
-    // atteint sur la dernière tentative, le dead code après la boucle est supprimé.
     if (code === RATE_LIMIT_CODE) {
       if (attempt < RETRY_DELAYS_MS.length) {
         await new Promise<void>((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
@@ -142,21 +159,18 @@ export async function callXprint<T>(
     return { ok: code === 0, code, msg, data };
   }
 
-  // Ligne inaccessible — satisfait le compilateur TypeScript
   return { ok: false, code: -1, msg: "Unreachable", data: null };
 }
 
-// ─── Chargement de config (correctifs #5 et #11) ─────────────────────────────
+// ─── Chargement de config avec cache ─────────────────────────────────────────
 
 export async function loadPrinterCfg(ownerId: string): Promise<PrinterCfg | null> {
   const now = Date.now();
   const cached = cfgCache.get(ownerId);
-  // Correctif #5 : cache les résultats null aussi (expiresAt non nul = entrée valide)
   if (cached && cached.expiresAt > now) return cached.cfg;
 
   const row = await prisma.printerConfig.findUnique({ where: { ownerId } });
   if (!row?.enabled || !row.user || !row.key || !row.sn) {
-    // Cache le null pour éviter les DB queries répétées (config absente ou désactivée)
     setCacheEntry(ownerId, { cfg: null, expiresAt: now + NULL_TTL_MS });
     return null;
   }
@@ -179,6 +193,10 @@ export async function loadPrinterCfg(ownerId: string): Promise<PrinterCfg | null
     header: row.header ?? null,
     footer: row.footer ?? null,
     copies: row.copies ?? 1,
+    // A3-1 : flags auto-print mis en cache avec le reste de la config
+    autoOnSaleConfirm: row.autoOnSaleConfirm,
+    autoOnPaymentConfirm: row.autoOnPaymentConfirm,
+    autoOnDeliveryRegister: row.autoOnDeliveryRegister,
   };
 
   setCacheEntry(ownerId, { cfg, expiresAt: now + CFG_TTL_MS });
@@ -187,12 +205,11 @@ export async function loadPrinterCfg(ownerId: string): Promise<PrinterCfg | null
 
 // ─── Helpers internes ─────────────────────────────────────────────────────────
 
-// Correctif #3 : troncature UTF-8 aware — recule jusqu'à un octet de début de séquence
+// Troncature UTF-8 aware — recule jusqu'à un octet de début de séquence
 function safeBytePreview(content: string, maxBytes: number): string {
   const buf = Buffer.from(content, "utf-8");
   if (buf.length <= maxBytes) return content;
   let end = maxBytes;
-  // 0x80–0xBF = octet de continuation — reculer jusqu'au premier octet de début
   while (end > 0 && (buf[end]! & 0xc0) === 0x80) end--;
   return buf.subarray(0, end).toString("utf-8");
 }
@@ -225,27 +242,39 @@ export async function sendPrintAndLog(
   );
 
   const orderId = res.data ?? undefined;
+  // N2 : msg peut être "" — fallback vers un message lisible
+  const errorMessage = res.ok ? undefined : (res.msg || `Erreur xprint (code ${res.code})`);
 
-  const log = await prisma.printLog.create({
-    data: {
-      ownerId,
-      sn: cfg.sn,
-      kind: meta.kind,
-      relatedId: meta.relatedId ?? null,
-      content: safeBytePreview(content, LOG_PREVIEW_BYTES), // correctif #3
-      copies,
-      status: res.ok ? "pending" : "failed",
-      orderId: orderId ?? null,
-      error: res.ok ? null : `${res.code} ${res.msg}`,
-      failedAt: res.ok ? null : new Date(),
-    },
-  });
+  // A3-4 : échec de la création du log tracé — ne masque pas le résultat d'impression
+  let logId: string | undefined;
+  try {
+    const log = await prisma.printLog.create({
+      data: {
+        ownerId,
+        sn: cfg.sn,
+        kind: meta.kind,
+        relatedId: meta.relatedId ?? null,
+        content: safeBytePreview(content, LOG_PREVIEW_BYTES),
+        copies,
+        status: res.ok ? "pending" : "failed",
+        orderId: orderId ?? null,
+        error: res.ok ? null : `${res.code} ${res.msg}`,
+        failedAt: res.ok ? null : new Date(),
+      },
+    });
+    logId = log.id;
+  } catch (logErr) {
+    console.error(
+      "[xprint] Impossible de créer PrintLog:",
+      logErr instanceof Error ? logErr.message : logErr,
+    );
+    return { ok: res.ok, orderId, errorMessage };
+  }
 
-  // Correctif #6 : IS_SERVERLESS calculé une seule fois au démarrage du module
   // ⚠️ NOTE SERVERLESS : ce setTimeout ne s'exécutera PAS sur Vercel/Lambda.
   // Utiliser un cron job + refreshPendingLogs() comme alternative universelle.
-  if (res.ok && orderId && !IS_SERVERLESS) {
-    const lid = log.id;
+  if (res.ok && orderId && logId && !IS_SERVERLESS) {
+    const lid = logId;
     setTimeout(() => {
       callXprint<boolean>(cfg, "queryOrderState", { orderId }, isBoolean)
         .then((r) => {
@@ -259,7 +288,7 @@ export async function sendPrintAndLog(
     }, 15_000);
   }
 
-  return { ok: res.ok, orderId, errorMessage: res.ok ? undefined : res.msg };
+  return { ok: res.ok, orderId, errorMessage };
 }
 
 // ─── Refresh statuts en batch rate-limit safe ─────────────────────────────────
@@ -267,44 +296,58 @@ export async function sendPrintAndLog(
 const REFRESH_BATCH_SIZE = 10;
 const REFRESH_BATCH_DELAY_MS = 3_500;
 
+// N6 : pagination curseur — traite tous les jobs pending sans limite de 100
 export async function refreshPendingLogs(
   ownerId: string,
 ): Promise<{ checked: number; printed: number }> {
   const cfg = await loadPrinterCfg(ownerId);
   if (!cfg) return { checked: 0, printed: 0 };
 
-  const pending = await prisma.printLog.findMany({
-    where: { ownerId, status: "pending", orderId: { not: null } },
-    select: { id: true, orderId: true },
-    take: 100,
-  });
-
+  let checked = 0;
   let printed = 0;
+  let cursor: string | undefined;
+  const PAGE = 100;
 
-  for (let i = 0; i < pending.length; i += REFRESH_BATCH_SIZE) {
-    const batch = pending.slice(i, i + REFRESH_BATCH_SIZE);
+  for (;;) {
+    const page = await prisma.printLog.findMany({
+      where: { ownerId, status: "pending", orderId: { not: null } },
+      select: { id: true, orderId: true },
+      orderBy: { id: "asc" },
+      take: PAGE,
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+    });
 
-    await Promise.all(
-      batch.map(async (log) => {
-        const r = await callXprint<boolean>(
-          cfg,
-          "queryOrderState",
-          { orderId: log.orderId! },
-          isBoolean,
-        );
-        if (r.ok && r.data === true) {
-          await prisma.printLog.update({ where: { id: log.id }, data: { status: "printed" } });
-          printed++;
-        }
-      }),
-    );
+    if (page.length === 0) break;
+    cursor = page[page.length - 1]!.id;
+    checked += page.length;
 
-    if (i + REFRESH_BATCH_SIZE < pending.length) {
-      await new Promise<void>((r) => setTimeout(r, REFRESH_BATCH_DELAY_MS));
+    for (let i = 0; i < page.length; i += REFRESH_BATCH_SIZE) {
+      const batch = page.slice(i, i + REFRESH_BATCH_SIZE);
+
+      await Promise.all(
+        batch.map(async (log) => {
+          const r = await callXprint<boolean>(
+            cfg,
+            "queryOrderState",
+            { orderId: log.orderId! },
+            isBoolean,
+          );
+          if (r.ok && r.data === true) {
+            await prisma.printLog.update({ where: { id: log.id }, data: { status: "printed" } });
+            printed++;
+          }
+        }),
+      );
+
+      if (i + REFRESH_BATCH_SIZE < page.length) {
+        await new Promise<void>((r) => setTimeout(r, REFRESH_BATCH_DELAY_MS));
+      }
     }
+
+    if (page.length < PAGE) break;
   }
 
-  return { checked: pending.length, printed };
+  return { checked, printed };
 }
 
 // ─── Status imprimante ────────────────────────────────────────────────────────

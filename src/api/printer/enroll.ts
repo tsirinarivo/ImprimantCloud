@@ -1,4 +1,4 @@
-import { loadPrinterCfg, callXprint, isString } from "../../lib/xprint";
+import { loadPrinterCfg, callXprint } from "../../lib/xprint"; // N4 : isString non utilisé, supprimé
 import { EnrollPrinterSchema } from "../../validation/printer";
 
 type EnrollResult = { success: string[]; fail: string[] };

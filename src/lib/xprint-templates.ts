@@ -1,23 +1,24 @@
-// ─── Normalisation encodage thermique (correctifs #3 et #6) ──────────────────
+// ─── Normalisation encodage thermique ────────────────────────────────────────
 
-// Correctif #3 : tous les caractères spéciaux exprimés en codes Unicode
-// explicites — aucun caractère invisible dans le source.
+// A3-5 : garde-fou null/undefined — retourne "" plutôt que TypeError
+// Tous les codes spéciaux exprimés en \uXXXX — aucun caractère invisible dans le source.
 export function normaliseForThermal(s: string): string {
+  if (typeof s !== "string") return "";
   return s
     .normalize("NFD")
-    .replace(/[\u0300-\u036F]/g, "")            // U+0300-U+036F diacritiques combinés
-    .replace(/œ/g, "oe").replace(/Œ/g, "OE") // œ Œ
-    .replace(/æ/g, "ae").replace(/Æ/g, "AE") // æ Æ
-    .replace(/[‘’]/g, "'")                // smart single quotes
-    .replace(/[“”]/g, '"')                // smart double quotes
-    .replace(/[–—]/g, "-")                // en-dash, em-dash
-    .replace(/…/g, "...")                      // ellipsis
-    .replace(/€/g, "EUR")                      // €
-    .replace(/→/g, "->")                       // →
-    .replace(/·/g, "-")                        // ·
-    // Correctif #3 : NBSP (U+00A0) et NNBSP (U+202F) entre chiffres → "."
+    .replace(/[\u0300-\u036F]/g, "")  // diacritiques combinés U+0300\u2013U+036F
+    .replace(/\u0153/g, "oe").replace(/\u0152/g, "OE") // \u0153 \u0152
+    .replace(/\u00E6/g, "ae").replace(/\u00C6/g, "AE") // \u00E6 \u00C6
+    .replace(/[\u2018\u2019]/g, "'")  // smart single quotes
+    .replace(/[\u201C\u201D]/g, '"')  // smart double quotes
+    .replace(/[\u2013\u2014]/g, "-")  // en-dash, em-dash
+    .replace(/\u2026/g, "...")        // ellipsis
+    .replace(/\u20AC/g, "EUR")        // \u20AC
+    .replace(/\u2192/g, "->")         // \u2192
+    .replace(/\u00B7/g, "-")          // \u00B7
+    // NBSP (U+00A0) et NNBSP (U+202F) entre chiffres → "." (séparateur milliers fr-FR)
     .replace(/(\d)[\u00A0\u202F](\d)/g, "$1.$2")
-    .replace(/[\u00A0\u202F]/g, " ");              // autres → espace normal
+    .replace(/[\u00A0\u202F]/g, " "); // autres NBSP/NNBSP \u2192 espace normal
 }
 
 // Échappe les balises xpyun dans les valeurs utilisateur
@@ -31,25 +32,29 @@ const WIDTH = 48; // 80mm → 48 chars ; 58mm → 32 chars
 
 const divider = (c = "-"): string => c.repeat(WIDTH);
 
+// A3-6 : tronque le label si label+value dépasse WIDTH — plus de débordement silencieux
 function row(label: string, value: string): string {
   const pad = WIDTH - label.length - value.length;
-  return label + (pad > 0 ? " ".repeat(pad) : " ") + value;
+  if (pad > 0) return label + " ".repeat(pad) + value;
+  const truncLen = Math.max(0, WIDTH - value.length - 1);
+  return label.slice(0, truncLen) + " " + value;
 }
 
-// Correctif #6 : NBSP/NNBSP via codes Unicode explicites — pas de regex invisible
-function formatMoney(amount: number, suffix = " MGA"): string {
+// A3-7 : exportée pour réutilisation ; suffix configurable (défaut " MGA")
+// Intl.NumberFormat("fr-FR") produit NBSP (U+00A0) ou NNBSP (U+202F) comme séparateur milliers.
+export function formatMoney(amount: number, suffix = " MGA"): string {
   return (
     new Intl.NumberFormat("fr-FR", {
       minimumFractionDigits: 0,
       maximumFractionDigits: 0,
     })
       .format(amount)
-      .replace(/[\u00A0\u202F]/g, ".") // séparateurs milliers → "."
+      .replace(/[\u00A0\u202F]/g, ".") // séparateurs milliers \u2192 "."
     + suffix
   );
 }
 
-// ─── Ticket de caisse (correctif #13 : chaîne de traitement documentée) ──────
+// ─── Ticket de caisse ─────────────────────────────────────────────────────────
 
 // Chaîne de traitement obligatoire :
 //   valeur brute → formatMoney() → escapeXprint() → template xpyun
@@ -61,6 +66,8 @@ export function formatSaleReceipt(opts: {
   shopPhone: string | null;
   saleCode: string;
   cashierName: string;
+  // N1 : date de transaction fournie par l'appelant — pas new Date() au moment de l'impression
+  date: Date;
   items: { name: string; qty: number; unitPrice: number; total: number }[];
   subtotal: number;
   discount: number;
@@ -71,7 +78,10 @@ export function formatSaleReceipt(opts: {
   qrPayload?: string;
   header?: string | null;
   footer?: string | null;
+  // A3-7 : devise configurable (défaut "MGA")
+  currency?: string;
 }): string {
+  const cur = opts.currency ? ` ${opts.currency}` : " MGA";
   const lines: string[] = [];
 
   if (opts.header?.trim()) {
@@ -83,29 +93,29 @@ export function formatSaleReceipt(opts: {
   lines.push(divider());
   lines.push(`<L>Ticket  : ${escapeXprint(opts.saleCode)}</L>`);
   lines.push(`<L>Caissier: ${escapeXprint(opts.cashierName)}</L>`);
-  lines.push(`<L>Date    : ${escapeXprint(new Date().toLocaleString("fr-FR"))}</L>`);
+  lines.push(`<L>Date    : ${escapeXprint(opts.date.toLocaleString("fr-FR"))}</L>`);
   lines.push(divider());
 
   for (const it of opts.items) {
     lines.push(`<L>${escapeXprint(it.name.slice(0, WIDTH))}</L>`);
     lines.push(
-      `<L>${escapeXprint(row(`  ${it.qty} x ${formatMoney(it.unitPrice)}`, formatMoney(it.total)))}</L>`,
+      `<L>${escapeXprint(row(`  ${it.qty} x ${formatMoney(it.unitPrice, cur)}`, formatMoney(it.total, cur)))}</L>`,
     );
   }
 
   lines.push(divider());
-  lines.push(`<L>${escapeXprint(row("Sous-total", formatMoney(opts.subtotal)))}</L>`);
+  lines.push(`<L>${escapeXprint(row("Sous-total", formatMoney(opts.subtotal, cur)))}</L>`);
   if (opts.discount > 0) {
-    lines.push(`<L>${escapeXprint(row("Remise", `-${formatMoney(opts.discount)}`))}</L>`);
+    lines.push(`<L>${escapeXprint(row("Remise", `-${formatMoney(opts.discount, cur)}`))}</L>`);
   }
-  lines.push(`<L><B>${escapeXprint(row("TOTAL", formatMoney(opts.total)))}</B></L>`);
+  lines.push(`<L><B>${escapeXprint(row("TOTAL", formatMoney(opts.total, cur)))}</B></L>`);
   lines.push(divider());
   lines.push(`<L>Paiement : ${escapeXprint(opts.paymentLabel)}</L>`);
   if (opts.cashGiven != null) {
-    lines.push(`<L>${escapeXprint(row("Especes recues", formatMoney(opts.cashGiven)))}</L>`);
+    lines.push(`<L>${escapeXprint(row("Especes recues", formatMoney(opts.cashGiven, cur)))}</L>`);
   }
   if (opts.change != null) {
-    lines.push(`<L>${escapeXprint(row("Monnaie rendue", formatMoney(opts.change)))}</L>`);
+    lines.push(`<L>${escapeXprint(row("Monnaie rendue", formatMoney(opts.change, cur)))}</L>`);
   }
   if (opts.qrPayload) {
     lines.push("");
@@ -207,7 +217,7 @@ export function formatInventorySheet(opts: {
   return lines.join("<BR>");
 }
 
-// ─── Avoir client / ticket de remboursement (correctif #13) ──────────────────
+// ─── Avoir client / ticket de remboursement ───────────────────────────────────
 
 export function formatCreditNote(opts: {
   shopName: string;
@@ -216,13 +226,18 @@ export function formatCreditNote(opts: {
   creditNoteCode: string;
   originalSaleCode: string;
   cashierName: string;
+  // N1 : date de l'avoir fournie par l'appelant — pas new Date() au moment de l'impression
+  date: Date;
   items: { name: string; qty: number; unitPrice: number; total: number }[];
   totalRefund: number;
   reason: string | null;
   refundMethod: string;
   header?: string | null;
   footer?: string | null;
+  // A3-7 : devise configurable (défaut "MGA")
+  currency?: string;
 }): string {
+  const cur = opts.currency ? ` ${opts.currency}` : " MGA";
   const lines: string[] = [];
 
   if (opts.header?.trim()) {
@@ -237,7 +252,7 @@ export function formatCreditNote(opts: {
   lines.push(`<L>Avoir N  : ${escapeXprint(opts.creditNoteCode)}</L>`);
   lines.push(`<L>Ticket   : ${escapeXprint(opts.originalSaleCode)}</L>`);
   lines.push(`<L>Caissier : ${escapeXprint(opts.cashierName)}</L>`);
-  lines.push(`<L>Date     : ${escapeXprint(new Date().toLocaleString("fr-FR"))}</L>`);
+  lines.push(`<L>Date     : ${escapeXprint(opts.date.toLocaleString("fr-FR"))}</L>`);
 
   if (opts.reason) {
     lines.push(divider());
@@ -248,12 +263,12 @@ export function formatCreditNote(opts: {
   for (const it of opts.items) {
     lines.push(`<L>${escapeXprint(it.name.slice(0, WIDTH))}</L>`);
     lines.push(
-      `<L>${escapeXprint(row(`  ${it.qty} x ${formatMoney(it.unitPrice)}`, formatMoney(it.total)))}</L>`,
+      `<L>${escapeXprint(row(`  ${it.qty} x ${formatMoney(it.unitPrice, cur)}`, formatMoney(it.total, cur)))}</L>`,
     );
   }
 
   lines.push(divider());
-  lines.push(`<L><B>${escapeXprint(row("REMBOURSEMENT", formatMoney(opts.totalRefund)))}</B></L>`);
+  lines.push(`<L><B>${escapeXprint(row("REMBOURSEMENT", formatMoney(opts.totalRefund, cur)))}</B></L>`);
   lines.push(`<L>Mode     : ${escapeXprint(opts.refundMethod)}</L>`);
   lines.push("");
   lines.push(`<C>Conserver cet avoir.</C>`);

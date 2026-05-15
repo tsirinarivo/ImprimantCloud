@@ -7,6 +7,13 @@ generator client {
   provider = "prisma-client-js"
 }
 
+// N5 : enum DB pour PrintLog.status — élimine les valeurs arbitraires
+enum PrintLogStatus {
+  pending
+  printed
+  failed
+}
+
 // Config par "tenant" — renommer ownerId selon le domaine :
 // shopId, warehouseId, branchId, tenantId…
 model PrinterConfig {
@@ -44,8 +51,8 @@ model PrintLog {
   content String // 500 premiers bytes du contenu (debug)
   copies  Int    @default(1)
 
-  status  String  // pending | printed | failed
-  orderId String? // identifiant de job renvoyé par xpyun
+  status  PrintLogStatus @default(pending) // N5 : enum — pending | printed | failed
+  orderId String?        // identifiant de job renvoyé par xpyun
 
   error    String?
   failedAt DateTime?

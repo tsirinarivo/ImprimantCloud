@@ -18,6 +18,7 @@ export type { PrinterCfg, XprintResponse } from "./lib/xprint";
 export {
   normaliseForThermal,
   escapeXprint,
+  formatMoney,
   formatSaleReceipt,
   formatDeliveryNote,
   formatInventorySheet,

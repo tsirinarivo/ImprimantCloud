@@ -1,21 +1,17 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "crypto";
 
-// Correctif #2 : chiffrement AES-256-GCM pour stocker les UserKEY xpyun
-// Variable d'environnement : APP_ENCRYPTION_KEY = 64 chars hex (32 bytes)
-// Générer : node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-
 const ALGO = "aes-256-gcm";
 const KEY_ENV = "APP_ENCRYPTION_KEY";
 
-// Correctif #10 : clé parsée une seule fois au lieu d'être ré-allouée à chaque appel
 let _cachedKey: Buffer | null = null;
 
 function getKey(): Buffer {
   if (_cachedKey) return _cachedKey;
   const hex = process.env[KEY_ENV];
-  if (!hex || hex.length !== 64) {
+  // Fix A3-3 : valide longueur ET format hex — un hex invalide produit une clé nulle silencieuse
+  if (!hex || !/^[0-9a-fA-F]{64}$/.test(hex)) {
     throw new Error(
-      `${KEY_ENV} doit être une chaîne hex de 64 caractères (32 bytes). ` +
+      `${KEY_ENV} doit être une chaîne hex valide de 64 caractères (32 bytes). ` +
         `Générer avec : node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`,
     );
   }
@@ -46,5 +42,4 @@ export function decrypt(ciphertext: string): string {
   return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf8");
 }
 
-// Valeur renvoyée par getConfig() pour masquer la clé en lecture
 export const KEY_MASK = "••••••••";

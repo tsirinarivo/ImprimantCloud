@@ -1,11 +1,11 @@
-import { prisma } from "./prisma";
-import { sendPrintAndLog } from "./xprint";
+import { loadPrinterCfg, sendPrintAndLog } from "./xprint";
 import { formatSaleReceipt } from "./xprint-templates";
+import type { PrinterCfg } from "./xprint";
 
 // ─── Pattern auto-print ───────────────────────────────────────────────────────
 //
-// Correctif #8 : les fonctions prennent les données déjà chargées en paramètre
-// au lieu d'accéder directement aux modèles métier (Sale, Shop, etc.) qui varient
+// Les fonctions prennent les données déjà chargées en paramètre au lieu
+// d'accéder directement aux modèles métier (Sale, Shop, etc.) qui varient
 // selon le projet cible. Le caller charge la vente depuis sa propre DB et la passe.
 //
 // Usage dans une route API métier :
@@ -24,6 +24,8 @@ import { formatSaleReceipt } from "./xprint-templates";
 export type SaleForReceipt = {
   id: string;
   code: string;
+  // N1 : date de transaction fournie par l'appelant — pas new Date() au moment de l'impression
+  date: Date;
   cashierName?: string | null;
   shopName: string;
   shopAddr?: string | null;
@@ -35,19 +37,29 @@ export type SaleForReceipt = {
   paymentMethod?: string | null;
   cashGiven?: number | null;
   change?: number | null;
+  currency?: string;
 };
 
-// Charge uniquement les flags d'impression (pas le modèle Sale)
-async function loadPrintFlags(ownerId: string) {
-  return prisma.printerConfig.findUnique({
-    where: { ownerId },
-    select: {
-      enabled: true,
-      autoOnSaleConfirm: true,
-      copies: true,
-      header: true,
-      footer: true,
-    },
+// A3-1 : buildContent utilise la cfg déjà chargée + mise en cache — plus de 2e aller DB
+// A3-2 : logique commune extraite — élimine la duplication entre auto et forcé
+function buildReceiptContent(sale: SaleForReceipt, cfg: PrinterCfg): string {
+  return formatSaleReceipt({
+    shopName: sale.shopName,
+    shopAddr: sale.shopAddr ?? null,
+    shopPhone: sale.shopPhone ?? null,
+    saleCode: sale.code,
+    cashierName: sale.cashierName ?? "",
+    date: sale.date,
+    items: sale.items,
+    subtotal: sale.subtotal,
+    discount: sale.discount ?? 0,
+    total: sale.total,
+    paymentLabel: sale.paymentMethod ?? "",
+    cashGiven: sale.cashGiven ?? undefined,
+    change: sale.change ?? undefined,
+    currency: sale.currency,
+    header: cfg.header,
+    footer: cfg.footer,
   });
 }
 
@@ -58,30 +70,15 @@ export async function autoPrintSaleReceipt(
   sale: SaleForReceipt,
 ): Promise<void> {
   try {
-    const flags = await loadPrintFlags(ownerId);
-    if (!flags?.enabled || !flags.autoOnSaleConfirm) return;
+    // A3-1 : loadPrinterCfg est mis en cache — pas de 2e requête DB pour les flags
+    const cfg = await loadPrinterCfg(ownerId);
+    if (!cfg?.autoOnSaleConfirm) return;
 
-    const content = formatSaleReceipt({
-      shopName: sale.shopName,
-      shopAddr: sale.shopAddr ?? null,
-      shopPhone: sale.shopPhone ?? null,
-      saleCode: sale.code,
-      cashierName: sale.cashierName ?? "",
-      items: sale.items,
-      subtotal: sale.subtotal,
-      discount: sale.discount ?? 0,
-      total: sale.total,
-      paymentLabel: sale.paymentMethod ?? "",
-      cashGiven: sale.cashGiven ?? undefined,
-      change: sale.change ?? undefined,
-      header: flags.header,
-      footer: flags.footer,
-    });
-
+    const content = buildReceiptContent(sale, cfg);
     await sendPrintAndLog(ownerId, content, {
       kind: "sale_receipt",
       relatedId: sale.id,
-      copies: flags.copies,
+      copies: cfg.copies,
     });
   } catch (e) {
     console.warn("[xprint] auto sale failed:", e instanceof Error ? e.message : e);
@@ -95,30 +92,15 @@ export async function printSaleReceiptNow(
   sale: SaleForReceipt,
 ): Promise<void> {
   try {
-    const flags = await loadPrintFlags(ownerId);
-    if (!flags?.enabled) return;
+    // A3-1 : même cache — pas de 2e requête DB
+    const cfg = await loadPrinterCfg(ownerId);
+    if (!cfg) return;
 
-    const content = formatSaleReceipt({
-      shopName: sale.shopName,
-      shopAddr: sale.shopAddr ?? null,
-      shopPhone: sale.shopPhone ?? null,
-      saleCode: sale.code,
-      cashierName: sale.cashierName ?? "",
-      items: sale.items,
-      subtotal: sale.subtotal,
-      discount: sale.discount ?? 0,
-      total: sale.total,
-      paymentLabel: sale.paymentMethod ?? "",
-      cashGiven: sale.cashGiven ?? undefined,
-      change: sale.change ?? undefined,
-      header: flags.header,
-      footer: flags.footer,
-    });
-
+    const content = buildReceiptContent(sale, cfg);
     await sendPrintAndLog(ownerId, content, {
       kind: "sale_receipt",
       relatedId: sale.id,
-      copies: flags.copies,
+      copies: cfg.copies,
     });
   } catch (e) {
     console.warn("[xprint] force sale failed:", e instanceof Error ? e.message : e);
