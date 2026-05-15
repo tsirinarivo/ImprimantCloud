@@ -13,8 +13,9 @@ export {
   isBoolean,
   isNumber,
   isRecord,
+  XPYUN_REGIONS,
 } from "./lib/xprint";
-export type { PrinterCfg, XprintResponse } from "./lib/xprint";
+export type { PrinterCfg, XprintResponse, XpyunRegion } from "./lib/xprint";
 export {
   normaliseForThermal,
   escapeXprint,

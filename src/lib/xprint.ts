@@ -4,11 +4,21 @@ import { decrypt } from "./encrypt";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+// Serveurs cloud xpyun documentés (Cloud Printer Server Config Guide)
+export const XPYUN_REGIONS = {
+  cn: "https://platform.xpyun.net/api/openapi/xprinter", // Chine (défaut)
+  sg: "https://sg.xpyun.net/api/openapi/xprinter",       // Singapour
+  de: "https://gm.xpyun.net/api/openapi/xprinter",       // Allemagne (Europe)
+} as const;
+
+export type XpyunRegion = keyof typeof XPYUN_REGIONS;
+
 export type PrinterCfg = {
   enabled: boolean;
   user: string;
   key: string;
-  baseUrl: string;
+  region: XpyunRegion;
+  baseUrl: string; // résolu depuis region — utilisé par callXprint
   sn: string;
   voice: number | null;
   header: string | null;
@@ -183,11 +193,14 @@ export async function loadPrinterCfg(ownerId: string): Promise<PrinterCfg | null
     decryptedKey = row.key;
   }
 
+  const region = (row.region in XPYUN_REGIONS ? row.region : "cn") as XpyunRegion;
+
   const cfg: PrinterCfg = {
     enabled: true,
     user: row.user,
     key: decryptedKey,
-    baseUrl: (row.baseUrl ?? "https://platform.xpyun.net/api/openapi/xprinter").replace(/\/$/, ""),
+    region,
+    baseUrl: XPYUN_REGIONS[region],
     sn: row.sn,
     voice: row.voice ?? null,
     header: row.header ?? null,

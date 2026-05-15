@@ -7,7 +7,7 @@ export const PrinterConfigSchema = z
     enabled: z.boolean(),
     user: z.string().min(1).max(100).optional(),
     key: z.string().min(1).max(500).optional(),
-    baseUrl: z.string().url().optional(),
+    region: z.enum(["cn", "sg", "de"]).default("cn"),
     sn: z.string().min(1).max(50).optional(),
     voice: z.number().int().min(0).max(4).nullable().optional(),
     header: z.string().max(500).nullable().optional(),

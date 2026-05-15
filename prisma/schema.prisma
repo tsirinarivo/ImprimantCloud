@@ -23,7 +23,7 @@ model PrinterConfig {
 
   user    String? // identifiant développeur xpyun
   key     String? // UserKEY chiffré en AES-256-GCM (voir src/lib/encrypt.ts)
-  baseUrl String? // override URL de base (Chine vs international)
+  region  String  @default("cn") // "cn" | "sg" | "de"
   sn      String? // numéro de série de l'imprimante
 
   voice  Int?    // 0-4 : 0=voix fort, 1=voix moyen, 2=voix bas, 3=bip, 4=muet
