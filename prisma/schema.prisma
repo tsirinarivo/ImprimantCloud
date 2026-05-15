@@ -26,7 +26,7 @@ model PrinterConfig {
   baseUrl String? // override URL de base (Chine vs international)
   sn      String? // numéro de série de l'imprimante
 
-  voice  Int?    // 0-15 : volume + son de notification
+  voice  Int?    // 0-4 : 0=voix fort, 1=voix moyen, 2=voix bas, 3=bip, 4=muet
   header String? // texte multi-lignes affiché en haut de chaque ticket
   footer String? // texte multi-lignes affiché en bas de chaque ticket
   copies Int     @default(1)

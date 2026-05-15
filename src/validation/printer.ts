@@ -9,7 +9,7 @@ export const PrinterConfigSchema = z
     key: z.string().min(1).max(500).optional(),
     baseUrl: z.string().url().optional(),
     sn: z.string().min(1).max(50).optional(),
-    voice: z.number().int().min(0).max(15).nullable().optional(),
+    voice: z.number().int().min(0).max(4).nullable().optional(),
     header: z.string().max(500).nullable().optional(),
     footer: z.string().max(500).nullable().optional(),
     copies: z.number().int().min(1).max(10).default(1),
@@ -45,6 +45,7 @@ export type PrintNowInput = z.infer<typeof PrintNowSchema>;
 export const EnrollPrinterSchema = z.object({
   sn: z.string().min(1).max(50),
   name: z.string().min(1).max(100),
+  idcode: z.string().max(50).optional(),
   cardno: z.string().max(50).optional(),
   pin: z.string().max(20).optional(),
 });

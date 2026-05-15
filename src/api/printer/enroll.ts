@@ -13,12 +13,12 @@ export async function enrollPrinter(ownerId: string, body: unknown) {
   const cfg = await loadPrinterCfg(ownerId);
   if (!cfg) return { ok: false, errorMessage: "Imprimante non configurée" };
 
-  const { sn, name, cardno, pin } = parsed.data;
+  const { sn, name, idcode, cardno, pin } = parsed.data;
 
   const res = await callXprint<EnrollResult>(
     cfg,
     "addPrinters",
-    { items: [{ sn, name, ...(cardno ? { cardno } : {}), ...(pin ? { pin } : {}) }] },
+    { items: [{ sn, name, ...(idcode ? { idcode } : {}), ...(cardno ? { cardno } : {}), ...(pin ? { pin } : {}) }] },
     (v): v is EnrollResult =>
       typeof v === "object" &&
       v !== null &&

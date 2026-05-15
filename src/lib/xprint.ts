@@ -187,7 +187,7 @@ export async function loadPrinterCfg(ownerId: string): Promise<PrinterCfg | null
     enabled: true,
     user: row.user,
     key: decryptedKey,
-    baseUrl: (row.baseUrl ?? "https://open.xpyun.net/api/openapi/xprinter").replace(/\/$/, ""),
+    baseUrl: (row.baseUrl ?? "https://platform.xpyun.net/api/openapi/xprinter").replace(/\/$/, ""),
     sn: row.sn,
     voice: row.voice ?? null,
     header: row.header ?? null,
